@@ -5,7 +5,7 @@
 ## 当前主文件
 
 - `op_statistic.csv`
-  当前实验体系下的第一优先级输入。需要在 `profile/attention` 和 `profile/ffn` 下递归查找。主要用于提取关键算子的时延并做单实验与跨实验对比。
+  当前实验体系下的第一优先级输入。需要在 `profile/attention` 和 `profile/ffn` 下递归查找。主要用于提取关键算子的时延，并汇总均值、最小值、最大值，再做单实验与跨实验对比。
 
 ## 其他常见文件
 
@@ -39,6 +39,7 @@
 - `A2e` 的时延是多少
 - `E2a` 的时延是多少
 - Attention 相关算子的时延是多少
+- 这些关键算子的均值、最小值、最大值分别是多少
 - Attention 侧关键算子是否构成主要耗时
 
 ### `profile/ffn`
@@ -50,6 +51,7 @@
 - `GroupMatmul` 的时延是多少
 - `MoeDispatch` 的时延是多少
 - `MoeCombine` 的时延是多少
+- 这些关键算子的均值、最小值、最大值分别是多少
 - FFN 侧关键算子是否构成主要耗时
 
 ## 单实验建议阅读顺序
@@ -60,6 +62,7 @@
 2. 递归查找 `profile/attention` 下的 `op_statistic.csv`
 3. 递归查找 `profile/ffn` 下的 `op_statistic.csv`
 4. 提取两侧关键算子时延
+   并同步整理均值、最小值、最大值
 5. 对比两侧 `A2e` / `E2a`
 6. 需要时再补读 timeline、`op_summary*.csv`、`kernel_details*.csv`
 7. 如果有通信文件，再补读 `communication.json` 和 `communication_matrix.json`
@@ -78,6 +81,9 @@
 
 - Attention 慢，还是 FFN 慢？
   先比两侧 `op_statistic.csv` 中的关键算子时延，特别是 `A2e` / `E2a`，再决定是否需要补充 timeline。
+
+- 是否存在明显抖动或长尾？
+  先比关键算子的均值、最小值、最大值；如果最大值远大于均值，需要提示存在长尾风险。
 
 - 是算不满，还是在等待？
   先看关键算子是否集中，再结合 timeline 或 `kernel_details*.csv` 判断。

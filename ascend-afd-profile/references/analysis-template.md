@@ -15,8 +15,8 @@
 对每组实验至少写四项：
 
 - `配置摘要：` 从 `run_params.txt` 的 `Test Scenario:` 段落中提取出的关键 `key=value` 字段
-- `Attention 侧观察：` `A2e`、`E2a`、Attention 相关算子的时延
-- `FFN 侧观察：` `A2e`、`E2a`、`GroupMatmul`、`MoeDispatch`、`MoeCombine` 的时延
+- `Attention 侧观察：` `A2e`、`E2a`、Attention 相关算子的均值 / 最小值 / 最大值
+- `FFN 侧观察：` `A2e`、`E2a`、`GroupMatmul`、`MoeDispatch`、`MoeCombine` 的均值 / 最小值 / 最大值
 - `综合判断：` 这组实验更像是哪类瓶颈
 
 如果存在解析不确定性，补一行：
@@ -36,6 +36,7 @@
 - 哪些实验更像 handoff 问题而不是单侧计算问题
 - 是否存在“配置变化了，但 profile 现象没变”的情况
 - 哪些实验中 `A2e` / `E2a` 的长尾从一侧转移到了另一侧
+- 哪些实验的关键算子最大值明显偏高，表现出更强的抖动
 
 ## 根因候选
 
@@ -64,7 +65,7 @@
 
 对于 `A2e` / `E2a`，优先写成：
 
-- `观察：` Attention 或 FFN 侧哪一个 `A2e` / `E2a` 更长
+- `观察：` Attention 或 FFN 侧哪一个 `A2e` / `E2a` 的均值 / 最小值 / 最大值更长
 - `解释：` 按当前经验规则，这通常说明对侧是当前时延瓶颈
 - `置信度：` 高 / 中 / 低
 

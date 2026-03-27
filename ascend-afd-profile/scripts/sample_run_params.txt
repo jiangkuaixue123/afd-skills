@@ -1,0 +1,4 @@
+Header info that is ignored.
+Test Scenario:
+BSIZE=24 SEQ_LEN=4096 TP=2 EP=8
+MICRO_BSZ=4 AFD_ENABLE=1

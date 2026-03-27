@@ -97,6 +97,11 @@ benchmark_result
 4. 分析 Attention 与 FFN profile。
    优先递归查找 `profile/attention` 和 `profile/ffn` 下的 `op_statistic.csv`。
 
+   对关键算子的执行时间分析，默认同时统计：
+   - 均值
+   - 最小值
+   - 最大值
+
    Attention 侧重点关注：
    - `A2e`
    - `E2a`
@@ -113,6 +118,7 @@ benchmark_result
    - Attention 侧关键算子是否主导时延
    - FFN 侧关键算子是否主导时延
    - 两侧 `A2e` / `E2a` 时延是否存在明显不对称
+   - 关键算子的均值、最小值、最大值是否显示出明显抖动或长尾
    - 是否能从这些关键算子推断当前瓶颈落在哪一侧
 
 5. 判断 AFD 级别瓶颈。
@@ -138,6 +144,29 @@ benchmark_result
 
 - 需要把 profile 文件名映射为分析问题时，读 [artifacts.md](./references/artifacts.md)
 - 需要组织最终诊断报告时，读 [analysis-template.md](./references/analysis-template.md)
+- 需要自动扫描 `benchmark_result` 并汇总关键算子统计时，运行 [extract_afd_profile_summary.py](./scripts/extract_afd_profile_summary.py)
+
+## 脚本入口
+
+优先使用下面的脚本做初步汇总：
+
+```bash
+python3 /path/to/ascend-afd-profile/scripts/extract_afd_profile_summary.py /path/to/benchmark_result
+```
+
+默认输出 Markdown 摘要，也支持：
+
+```bash
+python3 /path/to/ascend-afd-profile/scripts/extract_afd_profile_summary.py /path/to/benchmark_result --format json
+```
+
+脚本默认行为：
+
+- 遍历 `benchmark_result` 下所有一级实验目录
+- 从 `run_params.txt` 中只提取 `Test Scenario:` 之后的 `key=value`
+- 在 `profile/attention` 和 `profile/ffn` 下递归查找 `op_statistic.csv`
+- 汇总关键算子的 mean / min / max
+- 生成按实验分组的 Attention / FFN 摘要和瓶颈提示
 
 ## AFD 场景下的诊断重点
 
@@ -146,6 +175,7 @@ benchmark_result
 适合关注这些问题：
 
 - `op_statistic.csv` 中 `A2e`、`E2a`、Attention 相关算子的时延分布
+- `A2e`、`E2a`、Attention 相关算子的均值 / 最小值 / 最大值
 - Attention 相关算子是否构成主要耗时
 - Attention 侧的 `A2e` / `E2a` 是否异常偏长
 
@@ -156,6 +186,7 @@ benchmark_result
 适合关注这些问题：
 
 - `op_statistic.csv` 中 `A2e`、`E2a`、`GroupMatmul`、`MoeDispatch`、`MoeCombine` 的时延分布
+- `A2e`、`E2a`、`GroupMatmul`、`MoeDispatch`、`MoeCombine` 的均值 / 最小值 / 最大值
 - `GroupMatmul` 是否主导 FFN 主体计算
 - `MoeDispatch` / `MoeCombine` 是否主导 FFN 侧路由与聚合开销
 - FFN 侧的 `A2e` / `E2a` 是否异常偏长
@@ -167,6 +198,7 @@ benchmark_result
 - 如果某一侧的 `A2e` 或 `E2a` 时延明显更长，优先判断另一侧是当前时延瓶颈
 - 也就是说，较长的 `A2e` / `E2a` 往往意味着该侧正在等待对侧，真正更慢的是对侧
 - 这个判断属于高优先级经验规则；如果后续有更多 profile 证据冲突，需要显式说明冲突并降低置信度
+- 如果均值不高但最大值明显偏大，需要额外提示可能存在抖动、偶发阻塞或长尾问题
 
 
 ## 证据标准
@@ -177,6 +209,7 @@ benchmark_result
 - 区分“观测事实”和“根因推断”
 - 每个结论都尽量给出高 / 中 / 低置信度
 - 如果信息不足，明确指出最缺哪一类文件或哪一组实验对照
+- 汇总关键算子时，优先同时报告均值、最小值、最大值，而不是只报单个平均值
 
 ## 默认输出结构
 
@@ -231,5 +264,6 @@ benchmark_result
 - 先递归查找 `op_statistic.csv`
 - 如果一个侧别下存在多个 `op_statistic.csv`，需要说明它们分别来自哪个子目录
 - 优先基于 `op_statistic.csv` 提取关键算子时延
+- 关键算子时延默认汇总为均值 / 最小值 / 最大值
 - 如果还有其他文件，再补充 timeline、`op_summary*.csv`、`kernel_details*.csv`、通信相关文件
 - 缺失某类文件时，降低结论置信度，但仍给出现有证据下的最佳判断
