@@ -1,7 +1,7 @@
 interface:
   display_name: "昇腾 AFD Profile 分析"
-  short_description: "分析 benchmark_result 中的 AFD profile"
-  default_prompt: "使用 $ascend-afd-profile 读取 benchmark_result 目录下所有实验的 run_params.txt、attention profile 和 ffn profile，给出单实验结论、跨实验对比、最可能的瓶颈和下一步建议。"
+  short_description: "分析 benchmark_result 中的 AFD profile 和 A/F 纯计算时间"
+  default_prompt: "使用 $ascend-afd-profile 读取 benchmark_result 目录下所有实验的 run_params.txt、attention profile 和 ffn profile，给出单实验结论、跨实验对比、最可能的瓶颈和下一步建议；如果用户关注去除通信算子后的 Attention / FFN 计算时间差，也请结合 kernel_details.csv 统计 A/F 两侧 microbatch 计算时间。"
 
 policy:
   allow_implicit_invocation: true

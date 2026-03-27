@@ -1,13 +1,13 @@
 ---
 name: ascend-afd-profile
-description: 分析 Ascend / 昇腾 NPU 上 AFD（Attention FFN Disaggregation）的性能 profile。用于读取 benchmark_result 实验目录，遍历每组实验的 scripts/run_params.txt、profile/attention 和 profile/ffn 产物，定位 Attention、FFN、handoff、通信、负载不均衡等瓶颈，并给出对比分析和下一步 profiling 建议。
+description: 分析 Ascend / 昇腾 NPU 上 AFD（Attention FFN Disaggregation）的性能 profile。用于读取 benchmark_result 实验目录，遍历每组实验的 scripts/run_params.txt、profile/attention 和 profile/ffn 产物，定位 Attention、FFN、handoff、通信、负载不均衡等瓶颈；也支持基于 kernel_details.csv 统计剔除通信算子后的 A/F 两侧计算耗时，用于比较 Attention 与 FFN 的实际计算时间差距。
 ---
 
 # 昇腾 AFD Profile 分析
 
 这个 skill 用于分析 Ascend / 昇腾 NPU 上 AFD 场景的 profile 数据。
 
-默认输入是一个 `benchmark_result` 根目录，目录结构约定如下：
+默认输入是一个 `benchmark_result` 根目录(目录名任意)，目录结构约定如下：
 
 ```text
 benchmark_result
@@ -31,6 +31,11 @@ benchmark_result
 - `scripts/run_params.txt` 表示该组实验配置，是后续做实验对比的主索引
 
 当前 profile 分析时，优先递归查找两侧目录中的 `op_statistic.csv`，它是默认主分析输入。
+如果用户明确希望“去除通信算子后比较 A/F 两侧纯计算时间”，则进一步读取 `kernel_details.csv`：
+
+- 在 `profile/attention` 下，只统计每个 `E2a -> 下一次 A2e` 窗口中非通信 marker 算子的执行时间之和
+- 在 `profile/ffn` 下，只统计每个 `A2e -> 下一次 E2a` 窗口中非通信 marker 算子的执行时间之和
+- 这些窗口可近似视为每个 microbatch 在 A / F 两侧的本地计算时间，用于比较 Attention 与 FFN 的计算耗时差距
 
 ## 目标
 
@@ -39,8 +44,9 @@ benchmark_result
 1. 遍历所有实验子目录，如 `dir1`、`dir2`
 2. 读取每组实验的 `scripts/run_params.txt`
 3. 分别读取 `profile/attention` 与 `profile/ffn` 下的 profile 产物
-4. 建立“实验配置 -> profile 结果 -> 瓶颈判断”的映射
-5. 输出单实验分析和跨实验对比结论
+4. 在需要时，从 `kernel_details.csv` 中额外抽取去除通信算子的 A / F 两侧 microbatch 计算时间
+5. 建立“实验配置 -> profile 结果 -> 瓶颈判断”的映射
+6. 输出单实验分析和跨实验对比结论
 
 当前 `run_params.txt` 的默认解析规则如下：
 
@@ -121,7 +127,22 @@ benchmark_result
    - 关键算子的均值、最小值、最大值是否显示出明显抖动或长尾
    - 是否能从这些关键算子推断当前瓶颈落在哪一侧
 
-5. 判断 AFD 级别瓶颈。
+5. 在需要时分析 `kernel_details.csv` 中的 A / F 两侧计算时间。
+   当用户关注“剔除通信算子后的纯计算时间”时，优先递归查找 `profile/attention` 和 `profile/ffn` 下的 `kernel_details.csv`。
+
+   统计规则如下：
+   - 如果文件位于 `profile/attention` 下，只统计每个 `E2a -> 下一次 A2e` 之间所有非 marker kernel 的 `Duration(us)` 之和
+   - 如果文件位于 `profile/ffn` 下，只统计每个 `A2e -> 下一次 E2a` 之间所有非 marker kernel 的 `Duration(us)` 之和
+   - `A2e` / `E2a` 本身不计入窗口总时间
+   - 默认做一次轻量去极值：去掉 1 个最小样本和 1 个最大样本
+   - 输出这些窗口时间的均值、最大值、最小值、P75、P90、P99
+
+   用这些统计优先回答：
+   - 去掉通信算子后，Attention 和 FFN 哪一侧的纯计算更重
+   - 两侧计算时间差距是稳定存在，还是只在高分位数放大
+   - 长尾主要来自计算本身，还是更像通信 / handoff 抖动
+
+6. 判断 AFD 级别瓶颈。
    综合 Attention 和 FFN 两侧，判断问题更像是：
    - Attention 侧瓶颈
    - FFN 侧瓶颈
@@ -129,13 +150,13 @@ benchmark_result
    - 通信瓶颈
    - 配置导致的负载不均衡
 
-6. 做跨实验对比。
+7. 做跨实验对比。
    用 `run_params.txt` 作为主线，把实验分组比较，优先回答：
    - 哪些参数变化带来了性能改善或退化
    - 哪种 profile 现象和哪类配置最相关
    - 是否存在某个参数组合导致 Attention 和 FFN 失衡
 
-7. 输出结果。
+8. 输出结果。
    输出单实验摘要、实验间对比表述、最可能的根因和下一步建议。
 
 ## 参考材料的使用方式
@@ -145,6 +166,7 @@ benchmark_result
 - 需要把 profile 文件名映射为分析问题时，读 [artifacts.md](./references/artifacts.md)
 - 需要组织最终诊断报告时，读 [analysis-template.md](./references/analysis-template.md)
 - 需要自动扫描 `benchmark_result` 并汇总关键算子统计时，运行 [extract_afd_profile_summary.py](./scripts/extract_afd_profile_summary.py)
+- 需要从 `kernel_details.csv` 统计去掉通信算子后的 A / F 两侧计算时间时，运行 [extract_kernel_stage_summary.py](./scripts/extract_kernel_stage_summary.py)
 
 ## 脚本入口
 
@@ -167,6 +189,21 @@ python3 /path/to/ascend-afd-profile/scripts/extract_afd_profile_summary.py /path
 - 在 `profile/attention` 和 `profile/ffn` 下递归查找 `op_statistic.csv`
 - 汇总关键算子的 mean / min / max
 - 生成按实验分组的 Attention / FFN 摘要和瓶颈提示
+
+当用户需要比较去除通信算子后的 A / F 两侧计算时间时，使用：
+
+```bash
+python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/profile/attention/.../kernel_details.csv
+python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/profile/ffn/.../kernel_details.csv
+```
+
+脚本默认行为：
+
+- 自动从路径判断当前文件属于 `attention` 侧还是 `ffn` 侧
+- `attention` 侧只统计 `E2a -> 下一次 A2e` 之间的非 marker kernel 时间之和
+- `ffn` 侧只统计 `A2e -> 下一次 E2a` 之间的非 marker kernel 时间之和
+- 默认去掉 1 个最小值和 1 个最大值
+- 输出 `mean / min / max / p75 / p90 / p99`
 
 ## AFD 场景下的诊断重点
 
@@ -200,12 +237,28 @@ python3 /path/to/ascend-afd-profile/scripts/extract_afd_profile_summary.py /path
 - 这个判断属于高优先级经验规则；如果后续有更多 profile 证据冲突，需要显式说明冲突并降低置信度
 - 如果均值不高但最大值明显偏大，需要额外提示可能存在抖动、偶发阻塞或长尾问题
 
+### 4. 去通信后的 A / F 纯计算时间
+
+适合关注这些问题：
+
+- `kernel_details.csv` 中按 microbatch 切分后的本地计算窗口时间
+- `profile/attention` 下 `E2a -> 下一次 A2e` 的时间分布
+- `profile/ffn` 下 `A2e -> 下一次 E2a` 的时间分布
+- 两侧去除通信 marker 后，计算时间的均值和高分位数差距
+
+优先用来回答：
+
+- Attention 和 FFN 哪一侧的纯计算更慢
+- 两侧差距是中位附近就存在，还是只在 P90 / P99 拉开
+- 如果 `op_statistic.csv` 看起来像通信热点，但 `kernel_details.csv` 显示纯计算差距并不大，需要明确提示“更像 handoff / 通信问题，而不是单侧计算问题”
+
 
 ## 证据标准
 
 - 不要只根据一个热点表下结论
 - 但在当前实验体系下，`op_statistic.csv` 是第一优先级输入
 - 至少结合两个信号源，例如热点表加 timeline，或算子统计加通信统计
+- 如果用户明确要求比较 A / F 计算耗时差距，优先结合 `op_statistic.csv` 和 `kernel_details.csv`
 - 区分“观测事实”和“根因推断”
 - 每个结论都尽量给出高 / 中 / 低置信度
 - 如果信息不足，明确指出最缺哪一类文件或哪一组实验对照
@@ -227,6 +280,7 @@ python3 /path/to/ascend-afd-profile/scripts/extract_afd_profile_summary.py /path
 - 配置摘要
 - Attention 侧观察
 - FFN 侧观察
+- 去通信后的 A / F 计算时间对比
 - 综合判断
 
 ### dir2
