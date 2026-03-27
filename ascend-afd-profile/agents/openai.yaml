@@ -1,0 +1,7 @@
+interface:
+  display_name: "昇腾 AFD Profile 分析"
+  short_description: "分析 benchmark_result 中的 AFD profile"
+  default_prompt: "使用 $ascend-afd-profile 读取 benchmark_result 目录下所有实验的 run_params.txt、attention profile 和 ffn profile，给出单实验结论、跨实验对比、最可能的瓶颈和下一步建议。"
+
+policy:
+  allow_implicit_invocation: true
