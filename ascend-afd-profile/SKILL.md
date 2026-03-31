@@ -193,16 +193,26 @@ python3 /path/to/ascend-afd-profile/scripts/extract_afd_profile_summary.py /path
 当用户需要比较去除通信算子后的 A / F 两侧计算时间时，使用：
 
 ```bash
+python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/benchmark_result
 python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/profile/attention/.../kernel_details.csv
 python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/profile/ffn/.../kernel_details.csv
+python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/profile/ffn -o /tmp/kernel_stage_summary.csv
+python3 /path/to/ascend-afd-profile/scripts/extract_kernel_stage_summary.py /path/to/profile/attention --attn-ops FusedInferAttentionScore,A2e,E2a
 ```
 
 脚本默认行为：
 
+- 如果输入是 `benchmark_result` 根目录，会遍历所有一级实验目录
+- 在当前目录生成两张总表：`<benchmark_result_name>_attention_kernel_stage_summary.csv` 和 `<benchmark_result_name>_ffn_kernel_stage_summary.csv`
+- 这两张总表中，每一行表示一个实验目录下所有 Attention 或所有 FFN rank 聚合后的统计结果
+- 支持输入单个 `kernel_details.csv`，也支持输入目录后递归查找 `kernel_details.csv`
 - 自动从路径判断当前文件属于 `attention` 侧还是 `ffn` 侧
 - `attention` 侧只统计 `E2a -> 下一次 A2e` 之间的非 marker kernel 时间之和
 - `ffn` 侧只统计 `A2e -> 下一次 E2a` 之间的非 marker kernel 时间之和
-- 默认去掉 1 个最小值和 1 个最大值
+- 默认先剔除很大的上尾离群值，再去掉 1 个最小值和 1 个最大值后计算均值
+- 目录输入时，CSV 中每个 rank 输出 1 行，并追加 1 行 `ALL` 汇总结果
+- 支持通过 `--attn-ops` / `--ffn-ops` 传入可变算子列表，额外统计每个算子的平均时延
+- 终端输出摘要，同时默认把统计结果直接写入 CSV
 - 输出 `mean / min / max / p75 / p90 / p99`
 
 ## AFD 场景下的诊断重点
