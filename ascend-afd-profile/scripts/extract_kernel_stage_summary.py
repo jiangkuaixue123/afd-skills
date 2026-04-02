@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
 import math
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -419,6 +421,46 @@ def build_benchmark_side_records(
     return records
 
 
+def process_experiment_side(
+    experiment_dir_str: str,
+    side: str,
+    side_ops: Dict[str, List[str]],
+) -> Optional[Dict[str, object]]:
+    experiment_dir = Path(experiment_dir_str)
+    side_dir = experiment_dir / "profile" / side
+    csv_paths = discover_kernel_detail_files(side_dir)
+    payloads = [summarize_csv(csv_path, side_ops) for csv_path in csv_paths]
+    record = summarize_payload_group(payloads, side, side_ops)
+    if record is None:
+        return None
+    record["experiment"] = experiment_dir.name
+    return record
+
+
+def build_benchmark_side_records_parallel(
+    benchmark_root: Path,
+    side: str,
+    side_ops: Dict[str, List[str]],
+    workers: int,
+) -> List[Dict[str, object]]:
+    experiment_dirs = discover_experiment_dirs(benchmark_root)
+    if len(experiment_dirs) <= 1 or workers <= 1:
+        return build_benchmark_side_records(benchmark_root, side, side_ops)
+
+    records: List[Dict[str, object]] = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(process_experiment_side, str(experiment_dir), side, side_ops)
+            for experiment_dir in experiment_dirs
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            record = future.result()
+            if record is not None:
+                records.append(record)
+    records.sort(key=lambda item: item["experiment"])
+    return records
+
+
 def write_csv(output_path: Path, records: List[Dict[str, object]], side_ops: Dict[str, List[str]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -501,6 +543,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--ffn-ops",
         default="",
         help="FFN 侧需要额外统计平均时延的算子名列表，逗号分隔",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="benchmark_result 模式下的并行进程数；未指定时自动选择",
     )
     return parser.parse_args(argv)
 
@@ -631,9 +679,12 @@ def main(argv: Sequence[str]) -> int:
     experiment_dirs = discover_experiment_dirs(input_path)
     if experiment_dirs:
         outputs = default_benchmark_output_paths(input_path)
+        auto_workers = min(len(experiment_dirs), os.cpu_count() or 1)
+        workers = args.workers if args.workers is not None else auto_workers
+        workers = max(1, workers)
         side_records = {
-            "attention": build_benchmark_side_records(input_path, "attention", side_ops),
-            "ffn": build_benchmark_side_records(input_path, "ffn", side_ops),
+            "attention": build_benchmark_side_records_parallel(input_path, "attention", side_ops, workers),
+            "ffn": build_benchmark_side_records_parallel(input_path, "ffn", side_ops, workers),
         }
         write_benchmark_csv(outputs["attention"], side_records["attention"], "attention", side_ops)
         write_benchmark_csv(outputs["ffn"], side_records["ffn"], "ffn", side_ops)
@@ -644,6 +695,7 @@ def main(argv: Sequence[str]) -> int:
                         "mode": "benchmark_result",
                         "benchmark_result": str(input_path),
                         "requested_ops": side_ops,
+                        "workers": workers,
                         "outputs": {side: str(path) for side, path in outputs.items()},
                         "records": side_records,
                     },
