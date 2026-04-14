@@ -51,10 +51,12 @@ def infer_profile_side(csv_path: Path) -> str:
     normalized_parts = [normalize(part) for part in csv_path.parts]
     if "attention" in normalized_parts:
         return "attention"
+    if "modelrunner" in normalized_parts:
+        return "attention"
     if "ffn" in normalized_parts:
         return "ffn"
     raise ValueError(
-        "无法从路径推断侧别，请确保 kernel_details.csv 位于 profile/attention 或 profile/ffn 目录下。"
+        "无法从路径推断侧别，请确保 kernel_details.csv 位于 profile/attention、profile/model_runner 或 profile/ffn 目录下。"
     )
 
 
@@ -137,8 +139,16 @@ def mean_with_outlier_filter(values: List[float]) -> Optional[float]:
     return sum(trimmed) / len(trimmed)
 
 
+def stage_label(side: str) -> str:
+    if side == "attention":
+        return "attn_e2a_to_a2e_us"
+    if side == "ffn":
+        return "ffn_a2e_to_e2a_us"
+    raise ValueError(f"未知侧别: {side}")
+
+
 def build_stage_samples(rows: List[KernelRow], side: str) -> Dict[str, List[float]]:
-    stage_name = "attn_side_us" if side == "attention" else "ffn_side_us"
+    stage_name = stage_label(side)
     stage_samples = {stage_name: []}
 
     marker_positions = [idx for idx, row in enumerate(rows) if row.marker]
@@ -181,6 +191,7 @@ def summarize(values: List[float]) -> Dict[str, Optional[float]]:
             "mean": None,
             "min": None,
             "max": None,
+            "p50": None,
             "p75": None,
             "p90": None,
             "p99": None,
@@ -192,6 +203,7 @@ def summarize(values: List[float]) -> Dict[str, Optional[float]]:
         "mean": sum(trimmed) / len(trimmed),
         "min": min(trimmed),
         "max": max(trimmed),
+        "p50": percentile(trimmed, 0.50),
         "p75": percentile(trimmed, 0.75),
         "p90": percentile(trimmed, 0.90),
         "p99": percentile(trimmed, 0.99),
@@ -236,9 +248,25 @@ def default_output_path(input_path: Path) -> Path:
 def looks_like_experiment_dir(path: Path) -> bool:
     return (
         path.is_dir()
-        and (path / "profile" / "attention").is_dir()
+        and (
+            (path / "profile" / "attention").is_dir()
+            or (path / "profile" / "model_runner").is_dir()
+        )
         and (path / "profile" / "ffn").is_dir()
     )
+
+
+def profile_side_dir(experiment_dir: Path, side: str) -> Path:
+    if side == "attention":
+        attention_dir = experiment_dir / "profile" / "attention"
+        if attention_dir.is_dir():
+            return attention_dir
+        model_runner_dir = experiment_dir / "profile" / "model_runner"
+        if model_runner_dir.is_dir():
+            return model_runner_dir
+    if side == "ffn":
+        return experiment_dir / "profile" / "ffn"
+    raise ValueError(f"未知侧别: {side}")
 
 
 def discover_experiment_dirs(benchmark_root: Path) -> List[Path]:
@@ -256,14 +284,6 @@ def default_benchmark_output_paths(benchmark_root: Path) -> Dict[str, Path]:
     }
 
 
-def stage_label(side: str) -> str:
-    if side == "attention":
-        return "attn_side_us"
-    if side == "ffn":
-        return "ffn_side_us"
-    raise ValueError(f"未知侧别: {side}")
-
-
 def infer_rank_name(csv_path: Path) -> str:
     # .../<rank_dir>/ASCEND_PROFILER_OUTPUT/kernel_details.csv
     if len(csv_path.parents) >= 2:
@@ -271,7 +291,10 @@ def infer_rank_name(csv_path: Path) -> str:
     return csv_path.stem
 
 
-def summarize_csv(csv_path: Path, side_ops: Dict[str, List[str]]) -> Dict[str, object]:
+def summarize_csv(
+    csv_path: Path,
+    side_ops: Dict[str, List[str]],
+) -> Dict[str, object]:
     side = infer_profile_side(csv_path)
     rows = load_rows(csv_path)
     stage_samples = build_stage_samples(rows, side)
@@ -321,6 +344,7 @@ def build_output_records(payloads: List[Dict[str, object]], side_ops: Dict[str, 
                     "mean_us": stats["mean"],
                     "min_us": stats["min"],
                     "max_us": stats["max"],
+                    "p50_us": stats["p50"],
                     "p75_us": stats["p75"],
                     "p90_us": stats["p90"],
                     "p99_us": stats["p99"],
@@ -351,6 +375,7 @@ def build_output_records(payloads: List[Dict[str, object]], side_ops: Dict[str, 
                 "mean_us": stats["mean"],
                 "min_us": stats["min"],
                 "max_us": stats["max"],
+                "p50_us": stats["p50"],
                 "p75_us": stats["p75"],
                 "p90_us": stats["p90"],
                 "p99_us": stats["p99"],
@@ -388,6 +413,7 @@ def summarize_payload_group(
         "mean_us": stats["mean"],
         "min_us": stats["min"],
         "max_us": stats["max"],
+        "p50_us": stats["p50"],
         "p75_us": stats["p75"],
         "p90_us": stats["p90"],
         "p99_us": stats["p99"],
@@ -410,7 +436,7 @@ def build_benchmark_side_records(
 ) -> List[Dict[str, object]]:
     records: List[Dict[str, object]] = []
     for experiment_dir in discover_experiment_dirs(benchmark_root):
-        side_dir = experiment_dir / "profile" / side
+        side_dir = profile_side_dir(experiment_dir, side)
         csv_paths = discover_kernel_detail_files(side_dir)
         payloads = [summarize_csv(csv_path, side_ops) for csv_path in csv_paths]
         record = summarize_payload_group(payloads, side, side_ops)
@@ -427,7 +453,7 @@ def process_experiment_side(
     side_ops: Dict[str, List[str]],
 ) -> Optional[Dict[str, object]]:
     experiment_dir = Path(experiment_dir_str)
-    side_dir = experiment_dir / "profile" / side
+    side_dir = profile_side_dir(experiment_dir, side)
     csv_paths = discover_kernel_detail_files(side_dir)
     payloads = [summarize_csv(csv_path, side_ops) for csv_path in csv_paths]
     record = summarize_payload_group(payloads, side, side_ops)
@@ -475,6 +501,7 @@ def write_csv(output_path: Path, records: List[Dict[str, object]], side_ops: Dic
         "mean_us",
         "min_us",
         "max_us",
+        "p50_us",
         "p75_us",
         "p90_us",
         "p99_us",
@@ -501,6 +528,7 @@ def write_benchmark_csv(output_path: Path, records: List[Dict[str, object]], sid
         "mean_us",
         "min_us",
         "max_us",
+        "p50_us",
         "p75_us",
         "p90_us",
         "p99_us",
@@ -559,8 +587,8 @@ def render_markdown(
     output_path: Path,
 ) -> str:
     labels = {
-        "attn_side_us": "Attention 侧 microbatch 执行时间（E2a -> 下一次 A2e 之间，不含 marker）",
-        "ffn_side_us": "FFN 侧 microbatch 执行时间（A2e -> 下一次 E2a 之间，不含 marker）",
+        "attn_e2a_to_a2e_us": "Attention 侧 microbatch 执行时间（E2a -> 下一次 A2e 之间，不含 marker）",
+        "ffn_a2e_to_e2a_us": "FFN 侧 microbatch 执行时间（A2e -> 下一次 E2a 之间，不含 marker）",
     }
     lines = [
         "## Kernel Stage Summary",
@@ -596,6 +624,7 @@ def render_markdown(
                     f"- mean(us): {format_float(record['mean_us'])}",
                     f"- min(us): {format_float(record['min_us'])}",
                     f"- max(us): {format_float(record['max_us'])}",
+                    f"- p50(us): {format_float(record['p50_us'])}",
                     f"- p75(us): {format_float(record['p75_us'])}",
                     f"- p90(us): {format_float(record['p90_us'])}",
                     f"- p99(us): {format_float(record['p99_us'])}",
@@ -620,6 +649,7 @@ def render_markdown(
                 f"- mean(us): {format_float(stats['mean'])}",
                 f"- min(us): {format_float(stats['min'])}",
                 f"- max(us): {format_float(stats['max'])}",
+                f"- p50(us): {format_float(stats['p50'])}",
                 f"- p75(us): {format_float(stats['p75'])}",
                 f"- p90(us): {format_float(stats['p90'])}",
                 f"- p99(us): {format_float(stats['p99'])}",

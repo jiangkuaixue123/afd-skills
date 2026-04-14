@@ -174,6 +174,7 @@ python3 /Users/jiangchenzhou/code/afd-skills/ascend-afd-profile/scripts/extract_
 - `mean_us`
 - `min_us`
 - `max_us`
+- `p50_us`
 - `p75_us`
 - `p90_us`
 - `p99_us`
@@ -221,6 +222,7 @@ python3 /Users/jiangchenzhou/code/afd-skills/ascend-afd-profile/scripts/extract_
 - `mean_us`
 - `min_us`
 - `max_us`
+- `p50_us`
 - `p75_us`
 - `p90_us`
 - `p99_us`
