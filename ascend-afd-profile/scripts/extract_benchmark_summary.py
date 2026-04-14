@@ -56,7 +56,15 @@ def discover_benchmark_logs(input_path: Path) -> List[Path]:
 
 
 def infer_experiment_name(log_path: Path) -> str:
-    return log_path.parent.name
+    names: List[str] = []
+    current = log_path.parent
+    for _ in range(3):
+        if not current.name:
+            break
+        names.append(current.name)
+        current = current.parent
+    names.reverse()
+    return "/".join(names)
 
 
 def format_float(value: Optional[float]) -> str:
@@ -134,30 +142,56 @@ def parse_single_log(log_path_str: str) -> Dict[str, object]:
     return parse_benchmark_log(Path(log_path_str))
 
 
-def collect_records(log_paths: Sequence[Path], workers: int) -> List[Dict[str, object]]:
+def parse_single_log_safe(log_path_str: str) -> Tuple[Optional[Dict[str, object]], Optional[Dict[str, str]]]:
+    try:
+        return parse_single_log(log_path_str), None
+    except Exception as exc:
+        return None, {"benchmark_log": log_path_str, "error": str(exc)}
+
+
+def collect_records(
+    log_paths: Sequence[Path],
+    workers: int,
+) -> Tuple[List[Dict[str, object]], List[Dict[str, str]]]:
     if len(log_paths) <= 1 or workers <= 1:
-        return [parse_benchmark_log(log_path) for log_path in log_paths]
+        records: List[Dict[str, object]] = []
+        skipped: List[Dict[str, str]] = []
+        for log_path in log_paths:
+            record, error = parse_single_log_safe(str(log_path))
+            if record is not None:
+                records.append(record)
+            elif error is not None:
+                skipped.append(error)
+        records.sort(key=lambda item: str(item["experiment"]))
+        skipped.sort(key=lambda item: item["benchmark_log"])
+        return records, skipped
 
     def run_with_executor(
         executor_cls: type[concurrent.futures.Executor],
-    ) -> List[Dict[str, object]]:
+    ) -> Tuple[List[Dict[str, object]], List[Dict[str, str]]]:
         records: List[Dict[str, object]] = []
+        skipped: List[Dict[str, str]] = []
         with executor_cls(max_workers=workers) as executor:
             futures = [
-                executor.submit(parse_single_log, str(log_path))
+                executor.submit(parse_single_log_safe, str(log_path))
                 for log_path in log_paths
             ]
             for future in concurrent.futures.as_completed(futures):
-                records.append(future.result())
-        return records
+                record, error = future.result()
+                if record is not None:
+                    records.append(record)
+                elif error is not None:
+                    skipped.append(error)
+        return records, skipped
 
     try:
-        records = run_with_executor(concurrent.futures.ProcessPoolExecutor)
+        records, skipped = run_with_executor(concurrent.futures.ProcessPoolExecutor)
     except (OSError, PermissionError):
-        records = run_with_executor(concurrent.futures.ThreadPoolExecutor)
+        records, skipped = run_with_executor(concurrent.futures.ThreadPoolExecutor)
 
     records.sort(key=lambda item: str(item["experiment"]))
-    return records
+    skipped.sort(key=lambda item: item["benchmark_log"])
+    return records, skipped
 
 
 def write_csv(output_path: Path, records: Sequence[Dict[str, object]]) -> None:
@@ -210,12 +244,15 @@ def render_markdown(
     log_paths: Sequence[Path],
     workers: int,
     records: Sequence[Dict[str, object]],
+    skipped_logs: Sequence[Dict[str, str]],
 ) -> str:
     lines = [
         "## Benchmark Summary",
         "",
         f"- 输入路径: `{input_path}`",
         f"- 命中 benchmark.log 数量: `{len(log_paths)}`",
+        f"- 成功解析数量: `{len(records)}`",
+        f"- 跳过数量: `{len(skipped_logs)}`",
         f"- 并行进程数: `{workers}`",
         f"- 输出 CSV: `{output_path}`",
     ]
@@ -232,6 +269,13 @@ def render_markdown(
                 f"max_concurrency={record.get('max_concurrency')}, "
                 f"output_token_throughput={format_float(record.get('output_token_throughput_global_token_s'))} token/s"
             )
+    if skipped_logs:
+        lines.append("")
+        lines.append("### Skipped")
+        for item in skipped_logs[:10]:
+            lines.append(f"- `{item['benchmark_log']}`: {item['error']}")
+        if len(skipped_logs) > 10:
+            lines.append(f"- 其余跳过文件数: {len(skipped_logs) - 10}")
     return "\n".join(lines)
 
 
@@ -272,10 +316,12 @@ def main(argv: Sequence[str]) -> int:
     workers = args.workers if args.workers is not None else auto_workers
     workers = max(1, workers)
 
-    try:
-        records = collect_records(log_paths, workers)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+    records, skipped_logs = collect_records(log_paths, workers)
+    if not records:
+        print("没有成功解析任何 benchmark.log", file=sys.stderr)
+        if skipped_logs:
+            for item in skipped_logs[:10]:
+                print(f"- {item['benchmark_log']}: {item['error']}", file=sys.stderr)
         return 1
 
     output_path = (
@@ -293,6 +339,7 @@ def main(argv: Sequence[str]) -> int:
                     "output_path": str(output_path),
                     "workers": workers,
                     "log_count": len(log_paths),
+                    "skipped_logs": skipped_logs,
                     "records": records,
                 },
                 ensure_ascii=False,
@@ -300,7 +347,7 @@ def main(argv: Sequence[str]) -> int:
             )
         )
     else:
-        print(render_markdown(input_path, output_path, log_paths, workers, records))
+        print(render_markdown(input_path, output_path, log_paths, workers, records, skipped_logs))
     return 0
 
 

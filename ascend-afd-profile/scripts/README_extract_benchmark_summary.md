@@ -69,6 +69,7 @@ python3 ascend-afd-profile/scripts/extract_benchmark_summary.py \
 - `--workers 1` 表示关闭并行
 - 脚本优先使用多进程
 - 如果当前环境不允许创建进程池，会自动回退到线程池
+- 如果某个实验的 `benchmark.log` 缺字段或解析失败，会跳过该实验并继续处理其他目录
 
 ## 输出字段
 
@@ -90,7 +91,7 @@ CSV 输出包含以下列：
 其中：
 
 - 所有浮点字段保留 3 位小数
-- `experiment` 默认取 `benchmark.log` 所在目录名
+- `experiment` 默认取 `benchmark.log` 所在目录，加上其上两层目录，格式类似 `benchmark_results/deepseek-v3.2/normal_xxx`
 
 ## 示例
 
