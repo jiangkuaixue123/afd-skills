@@ -144,23 +144,20 @@ python3 /Users/jiangchenzhou/code/afd-skills/ascend-afd-profile/scripts/extract_
   --ffn-ops GroupedMatmul,A2e,E2a
 ```
 
-会在**当前目录**生成两张总表：
+会在**当前目录**生成一张总表：
 
-- `<benchmark_result_name>_attention_kernel_stage_summary.csv`
-- `<benchmark_result_name>_ffn_kernel_stage_summary.csv`
+- `<benchmark_result_name>_kernel_stage_summary.csv`
 
 如果有多个实验目录，脚本会默认使用多进程并行处理这些实验；也可以通过 `--workers` 手动指定并行进程数。
 
 例如输入目录叫 `afd_result`，则输出：
 
-- `afd_result_attention_kernel_stage_summary.csv`
-- `afd_result_ffn_kernel_stage_summary.csv`
+- `afd_result_kernel_stage_summary.csv`
 
 #### 表含义
 
-- 每张表的每一行表示一个实验目录
-- `attention` 表中每行表示一个实验目录下所有 Attention rank 合并后的统计结果
-- `ffn` 表中每行表示一个实验目录下所有 FFN rank 合并后的统计结果
+- 表中每一行表示一个实验目录下某一侧的汇总结果
+- 通过 `side` 列区分 `attention` 和 `ffn`
 
 #### 输出列
 

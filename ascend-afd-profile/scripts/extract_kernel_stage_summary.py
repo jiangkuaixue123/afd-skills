@@ -275,13 +275,10 @@ def discover_experiment_dirs(benchmark_root: Path) -> List[Path]:
     return sorted(path for path in benchmark_root.iterdir() if looks_like_experiment_dir(path))
 
 
-def default_benchmark_output_paths(benchmark_root: Path) -> Dict[str, Path]:
+def default_benchmark_output_path(benchmark_root: Path) -> Path:
     prefix = benchmark_root.name or "benchmark_result"
     cwd = Path.cwd()
-    return {
-        "attention": cwd / f"{prefix}_attention_kernel_stage_summary.csv",
-        "ffn": cwd / f"{prefix}_ffn_kernel_stage_summary.csv",
-    }
+    return cwd / f"{prefix}_kernel_stage_summary.csv"
 
 
 def infer_rank_name(csv_path: Path) -> str:
@@ -517,7 +514,7 @@ def write_csv(output_path: Path, records: List[Dict[str, object]], side_ops: Dic
             writer.writerow(record)
 
 
-def write_benchmark_csv(output_path: Path, records: List[Dict[str, object]], side: str, side_ops: Dict[str, List[str]]) -> None:
+def write_benchmark_csv(output_path: Path, records: List[Dict[str, object]], side_ops: Dict[str, List[str]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "experiment",
@@ -534,8 +531,9 @@ def write_benchmark_csv(output_path: Path, records: List[Dict[str, object]], sid
         "p99_us",
         "trim_rule",
     ]
-    for op_name in side_ops.get(side, []):
-        fieldnames.append(op_mean_field_name(op_name))
+    for side in ("attention", "ffn"):
+        for op_name in side_ops.get(side, []):
+            fieldnames.append(op_mean_field_name(op_name))
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -662,7 +660,7 @@ def render_markdown(
 
 def render_benchmark_markdown(
     benchmark_root: Path,
-    outputs: Dict[str, Path],
+    output_path: Path,
     side_records: Dict[str, List[Dict[str, object]]],
     side_ops: Dict[str, List[str]],
 ) -> str:
@@ -670,8 +668,7 @@ def render_benchmark_markdown(
         "## Benchmark Kernel Stage Summary",
         "",
         f"- benchmark_result: `{benchmark_root}`",
-        f"- attention CSV: `{outputs['attention']}`",
-        f"- ffn CSV: `{outputs['ffn']}`",
+        f"- merged CSV: `{output_path}`",
     ]
     if side_ops["attention"]:
         lines.append(f"- Attention 算子均值统计: `{', '.join(side_ops['attention'])}`")
@@ -708,7 +705,7 @@ def main(argv: Sequence[str]) -> int:
 
     experiment_dirs = discover_experiment_dirs(input_path)
     if experiment_dirs:
-        outputs = default_benchmark_output_paths(input_path)
+        output_path = default_benchmark_output_path(input_path)
         auto_workers = min(len(experiment_dirs), os.cpu_count() or 1)
         workers = args.workers if args.workers is not None else auto_workers
         workers = max(1, workers)
@@ -716,8 +713,11 @@ def main(argv: Sequence[str]) -> int:
             "attention": build_benchmark_side_records_parallel(input_path, "attention", side_ops, workers),
             "ffn": build_benchmark_side_records_parallel(input_path, "ffn", side_ops, workers),
         }
-        write_benchmark_csv(outputs["attention"], side_records["attention"], "attention", side_ops)
-        write_benchmark_csv(outputs["ffn"], side_records["ffn"], "ffn", side_ops)
+        merged_records = sorted(
+            side_records["attention"] + side_records["ffn"],
+            key=lambda item: (item["experiment"], item["side"]),
+        )
+        write_benchmark_csv(output_path, merged_records, side_ops)
         if args.format == "json":
             print(
                 json.dumps(
@@ -726,15 +726,15 @@ def main(argv: Sequence[str]) -> int:
                         "benchmark_result": str(input_path),
                         "requested_ops": side_ops,
                         "workers": workers,
-                        "outputs": {side: str(path) for side, path in outputs.items()},
-                        "records": side_records,
+                        "output": str(output_path),
+                        "records": merged_records,
                     },
                     ensure_ascii=False,
                     indent=2,
                 )
             )
         else:
-            print(render_benchmark_markdown(input_path, outputs, side_records, side_ops))
+            print(render_benchmark_markdown(input_path, output_path, side_records, side_ops))
         return 0
 
     csv_paths = discover_kernel_detail_files(input_path)
