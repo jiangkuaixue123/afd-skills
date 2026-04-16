@@ -1,21 +1,13 @@
 # extract_normal_kernel_summary.py
 
-用于统计 normal 场景下 `kernel_details.csv` 中给定算子列表的耗时分布。
+用于统计 normal 场景下 `kernel_details.csv` 中目标算子的耗时分布。
 
-脚本会递归扫描输入路径下所有名为 `kernel_details.csv` 的文件，匹配指定算子名，并输出这些算子的耗时统计结果，包括：
+脚本支持两种模式：
 
-- `mean_us`
-- `p25_us`
-- `p50_us`
-- `p75_us`
-- `p90_us`
-- `p99_us`
+- `op`：按单个算子匹配，统计这些算子的 `Duration(us)` 分布
+- `loop`：按给定的有序算子序列匹配完整循环，统计每个循环总耗时的分布
 
-输出结果支持 3 个层级：
-
-- `profile`：每个 profile 一行
-- `experiment`：每个实验聚合一行
-- `overall`：所有实验总体聚合一行
+脚本会递归扫描输入路径下所有名为 `kernel_details.csv` 的文件，支持多个实验目录、每个实验目录下多个 profile，并默认启用多进程并行。
 
 ## 适用目录
 
@@ -33,21 +25,31 @@ benchmark_results/
                 kernel_details.csv
 ```
 
+也支持更扁平的布局，例如：
+
+```text
+experiment/
+  profile/
+    model_runner/
+      rank0/
+        ASCEND_PROFILER_OUTPUT/
+          kernel_details.csv
+```
+
 脚本会自动从路径中识别：
 
 - `experiment`
-- `rank_name`
 - `profile_name`
+- `rank_name`
+
+如果目录里没有显式 profile 名，会写成 `DEFAULT_PROFILE`。
 
 ## 匹配规则
 
-通过 `--ops` 传入待统计的算子列表，多个算子用逗号分隔。
+可以通过 `--ops` 或 `--ops-file` 传入目标列表。
 
-例如：
-
-```bash
---ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu'
-```
+- `--ops`：命令行里直接传，多个项目用逗号分隔
+- `--ops-file`：从文件读取，适合很长的循环序列
 
 匹配时会先做名字归一化：
 
@@ -57,16 +59,66 @@ benchmark_results/
 然后按以下规则匹配：
 
 - 完全匹配
-- 或者 kernel 名以目标算子名为前缀
+- 或者 kernel 名以目标名为前缀
 
 例如：
 
 - `QuantBatchMatmulV3` 可以匹配 `QuantBatchMatmulV3_ND_NZ_int8_int8_bf16_high_performance_24`
 - `SwiGlu` 可以匹配 `SwiGlu_3_high_performance_27`
 
+在 `loop` 模式下，`--ops` 的顺序有意义，脚本会按顺序寻找一个完整循环；只有完整匹配到整套序列，才会记为一个样本。
+
+如果使用 `--ops-file`，文件中的顺序同样会被保留，因此在 `loop` 模式下建议优先使用文件。
+
+## `--ops-file` 文件格式
+
+推荐格式：每行一个算子或前缀。
+
+例如：
+
+```text
+# mla loop
+AddRmsNorm_3_high_performance_33
+Add_ce3d1ff8ba23a0bcb292da3577c1625d_high_performance_221000002
+mla_preprocess_0_mix_aic
+MatMulV2_ND_ND_FP16_FP16_false_true_all_98513
+```
+
+支持规则：
+
+- 空行会被忽略
+- 以 `#` 开头的行会被忽略
+- 也支持一行里写多个，用逗号分隔
+
+例如下面这种也可以：
+
+```text
+OpA,OpB,OpC
+OpD
+```
+
+注意：
+
+- `--ops` 和 `--ops-file` 只能二选一，不能同时传
+- 在 `loop` 模式下，文件顺序就是循环匹配顺序
+
+## 分位数
+
+通过 `--percentiles` 指定要输出的分位数，例如：
+
+```bash
+--percentiles '50,80,90,95,99'
+```
+
+默认分位数是：
+
+```text
+25,50,75,90,99
+```
+
 ## 基本用法
 
-### 1. 统计一个 benchmark 根目录下所有实验
+### 1. `op` 模式，统计一个 benchmark 根目录下所有实验
 
 ```bash
 python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
@@ -74,13 +126,27 @@ python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
   --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu'
 ```
 
-如果输入是目录，默认输出到当前工作目录：
+### 2. `loop` 模式，统计每个完整循环总耗时
 
-```text
-./deepseek-v3.2_normal_kernel_summary.csv
+```bash
+python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --mode loop \
+  --loop-name mla_loop_total \
+  --ops 'AddRmsNorm_3_high_performance_33,Add_ce3d1ff8ba23a0bcb292da3577c1625d_high_performance_221000002,mla_preprocess_0_mix_aic,MatMulV2_ND_ND_FP16_FP16_false_true_all_98513'
 ```
 
-### 2. 只统计一个实验目录
+### 3. 使用 `--ops-file` 读取长序列
+
+```bash
+python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --mode loop \
+  --loop-name mla_loop_total \
+  --ops-file /path/to/mla_loop_ops.txt
+```
+
+### 4. 只统计一个实验目录
 
 ```bash
 python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
@@ -88,13 +154,41 @@ python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
   --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu'
 ```
 
-### 3. 只统计一个具体的 kernel_details.csv
+### 5. 只统计一个具体的 `kernel_details.csv`
 
 ```bash
 python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
   /path/to/kernel_details.csv \
   --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu'
 ```
+
+## 多实验、多 profile、并行处理
+
+当输入路径下有很多实验目录、每个实验下又有多个 profile 时，脚本会递归扫描全部 `kernel_details.csv`，并按以下层级汇总：
+
+- `profile`
+- `experiment`
+- `overall`
+
+你可以通过 `--workers` 指定并行进程数：
+
+```bash
+python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --mode loop \
+  --loop-name mla_loop_total \
+  --ops 'AddRmsNorm_3_high_performance_33,Add_ce3d1ff8ba23a0bcb292da3577c1625d_high_performance_221000002,mla_preprocess_0_mix_aic,MatMulV2_ND_ND_FP16_FP16_false_true_all_98513' \
+  --scopes experiment,overall \
+  --workers 8
+```
+
+说明：
+
+- 默认会自动选择并发数
+- `--workers 1` 表示关闭并行
+- 脚本优先使用多进程
+- 如果当前环境不允许创建进程池，会自动回退到线程池
+- 如果某个目录下的 `kernel_details.csv` 解析失败，脚本会继续处理其他目录，并打印失败目录和原因
 
 ## 只输出某些层级
 
@@ -108,31 +202,13 @@ python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
 
 示例：
 
-### 1. 只输出 overall
-
 ```bash
 python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
   /path/to/benchmark_results/deepseek-v3.2 \
-  --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu' \
+  --mode loop \
+  --loop-name mla_loop_total \
+  --ops 'AddRmsNorm_3_high_performance_33,Add_ce3d1ff8ba23a0bcb292da3577c1625d_high_performance_221000002,mla_preprocess_0_mix_aic,MatMulV2_ND_ND_FP16_FP16_false_true_all_98513' \
   --scopes overall
-```
-
-### 2. 只输出 experiment
-
-```bash
-python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
-  /path/to/benchmark_results/deepseek-v3.2 \
-  --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu' \
-  --scopes experiment
-```
-
-### 3. 同时输出 experiment 和 overall
-
-```bash
-python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
-  /path/to/benchmark_results/deepseek-v3.2 \
-  --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu' \
-  --scopes experiment,overall
 ```
 
 ## 指定输出文件
@@ -141,58 +217,38 @@ python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
 python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
   /path/to/benchmark_results/deepseek-v3.2 \
   --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu' \
-  --scopes overall \
-  --output ./overall_only.csv
+  --output ./normal_kernel_summary.csv
 ```
-
-## 并行处理
-
-当实验组很多、`kernel_details.csv` 很多时，可以通过 `--workers` 指定并行进程数：
-
-```bash
-python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
-  /path/to/benchmark_results/deepseek-v3.2 \
-  --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu' \
-  --scopes experiment \
-  --workers 8
-```
-
-说明：
-
-- 默认会自动选择并发数
-- `--workers 1` 表示关闭并行
-- 脚本优先使用多进程
-- 如果当前环境不允许创建进程池，会自动回退到线程池
 
 ## 输出 CSV 字段说明
 
 输出 CSV 包含以下列：
 
+- `match_mode`：`op` 或 `loop`
 - `scope`：统计层级，取值为 `profile` / `experiment` / `overall`
 - `experiment`：实验目录名
-- `rank_name`：rank 目录名
 - `profile_name`：profile 名
-- `op_name`：目标算子名
+- `rank_name`：rank 目录名
+- `op_name`：`op` 模式下是目标算子名；`loop` 模式下是 `--loop-name`
 - `csv_count`：该层级汇总了多少个 `kernel_details.csv`
-- `sample_count`：该算子命中的 kernel 样本数
+- `sample_count`：命中的样本数
 - `mean_us`
-- `p25_us`
-- `p50_us`
-- `p75_us`
-- `p90_us`
-- `p99_us`
+- `pXX_us`：由 `--percentiles` 决定
+
+在 `op` 模式下，`sample_count` 表示命中的 kernel 数。
+
+在 `loop` 模式下，`sample_count` 表示识别出的完整循环数。
 
 ## CSV 排序规则
 
 输出 CSV 按以下顺序排序：
 
-1. `op_name`
-2. `scope`，顺序为 `overall -> experiment -> profile`
-3. `experiment`
-4. `rank_name`
+1. `match_mode`
+2. `op_name`
+3. `scope`，顺序为 `overall -> experiment -> profile`
+4. `experiment`
 5. `profile_name`
-
-也就是说，同一个算子的 overall / experiment / profile 结果会排在一起，方便对比。
+6. `rank_name`
 
 ## 终端输出
 
@@ -211,12 +267,18 @@ python3 ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
 ```bash
 python3 /Users/jiangchenzhou/code/afd-skills/ascend-afd-profile/scripts/extract_normal_kernel_summary.py \
   /Users/jiangchenzhou/code/a3_inference/itask/workdir/hk02335263/jcz_afd_100/code/MY_code/deepseek-common/benchmark_results/deepseek-v3.2 \
-  --ops 'MoeDistributeCombineV2,QuantBatchMatmulV3,SwiGlu' \
-  --scopes overall
+  --mode loop \
+  --loop-name mla_loop_total \
+  --ops 'AddRmsNorm_3_high_performance_33,Add_ce3d1ff8ba23a0bcb292da3577c1625d_high_performance_221000002,mla_preprocess_0_mix_aic,MatMulV2_ND_ND_FP16_FP16_false_true_all_98513' \
+  --percentiles '50,90,99' \
+  --scopes experiment,overall \
+  --workers 8
 ```
 
 ## 注意事项
 
 - 输入路径既可以是目录，也可以是单个 `kernel_details.csv`
-- 如果给定算子没有匹配到任何 kernel，脚本会报错退出
+- 如果给定算子没有匹配到任何记录，脚本会报错退出
+- `loop` 模式会忽略不完整循环
 - 当前分位数统计直接基于全部命中样本，不做去极值处理
+- 如果部分目录解析失败，终端会打印失败目录及错误原因；JSON 输出里会带 `skipped_csvs`
