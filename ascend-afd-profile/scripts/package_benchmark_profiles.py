@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import shutil
+import sys
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,10 +35,56 @@ class PackageResult:
     archive_path: Path
 
 
+class Progress:
+    def __init__(self, label: str, total: int, enabled: bool = True, width: int = 30) -> None:
+        self.label = label
+        self.total = max(total, 0)
+        self.enabled = enabled
+        self.width = width
+        self.current = 0
+        self.last_message_len = 0
+
+    def __enter__(self) -> "Progress":
+        if self.enabled:
+            self.render()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if not self.enabled:
+            return
+        if exc_type is None and self.current < self.total:
+            self.current = self.total
+            self.render()
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def advance(self, step: int = 1, detail: str = "") -> None:
+        self.current = min(self.current + step, self.total) if self.total else self.current + step
+        if self.enabled:
+            self.render(detail)
+
+    def render(self, detail: str = "") -> None:
+        if self.total:
+            ratio = self.current / self.total
+            filled = int(self.width * ratio)
+            bar = "#" * filled + "-" * (self.width - filled)
+            message = f"\r{self.label}: [{bar}] {self.current}/{self.total} {ratio:6.2%}"
+        else:
+            message = f"\r{self.label}: {self.current}"
+
+        if detail:
+            message = f"{message} {detail}"
+
+        padding = " " * max(self.last_message_len - len(message), 0)
+        sys.stderr.write(message + padding)
+        sys.stderr.flush()
+        self.last_message_len = len(message)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect each experiment's log/benchmark.log and sampled files from "
+            "Collect each experiment's log/benchmark.log and sampled profiles from "
             "profile/model_runner and profile/ffn, then create per-experiment "
             "archives and one final archive."
         )
@@ -58,7 +105,13 @@ def parse_args() -> argparse.Namespace:
         "--sample-count",
         type=int,
         default=4,
-        help="Number of files to copy from each profile subdirectory. Default: 4.",
+        help="Number of files to copy from each selected profile directory. Default: 4.",
+    )
+    parser.add_argument(
+        "--profile-count",
+        type=int,
+        default=1,
+        help="Number of profile directories to copy from each profile subdirectory. Default: 1.",
     )
     parser.add_argument(
         "--archive-name",
@@ -69,6 +122,11 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Remove output directory first if it already exists.",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable terminal progress bars.",
     )
     return parser.parse_args()
 
@@ -82,6 +140,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit(f"input_dir is not a directory: {args.input_dir}")
     if args.sample_count < 0:
         raise SystemExit("--sample-count must be >= 0")
+    if args.profile_count < 0:
+        raise SystemExit("--profile-count must be >= 0")
 
 
 def discover_experiments(input_dir: Path) -> List[Experiment]:
@@ -107,6 +167,12 @@ def iter_profile_files(profile_dir: Path) -> Iterable[Path]:
     return sorted(path for path in profile_dir.rglob("*") if path.is_file())
 
 
+def iter_profile_dirs(profile_dir: Path) -> Iterable[Path]:
+    if not profile_dir.is_dir():
+        return []
+    return sorted(path for path in profile_dir.iterdir() if path.is_dir())
+
+
 def copy_file(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
@@ -121,25 +187,47 @@ def make_tar_gz(
     archive_path: Path,
     arcname: Path | str,
     exclude: Callable[[Path], bool] | None = None,
+    progress: Progress | None = None,
 ) -> None:
     archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     def tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
         if exclude is None:
-            return tarinfo
-        member_path = source_path.parent / tarinfo.name
-        if exclude(member_path.resolve()):
+            should_include = True
+        else:
+            member_path = source_path.parent / tarinfo.name
+            should_include = not exclude(member_path.resolve())
+
+        if not should_include:
             return None
+        if progress is not None and tarinfo.isfile():
+            progress.advance(detail=tarinfo.name)
         return tarinfo
 
     with tarfile.open(archive_path, "w:gz") as tar:
         tar.add(source_path, arcname=str(arcname), filter=tar_filter)
 
 
+def count_tar_files(source_path: Path, exclude: Callable[[Path], bool] | None = None) -> int:
+    if source_path.is_file():
+        return 0 if exclude is not None and exclude(source_path.resolve()) else 1
+
+    total = 0
+    for path in source_path.rglob("*"):
+        if not path.is_file():
+            continue
+        resolved_path = path.resolve()
+        if exclude is not None and exclude(resolved_path):
+            continue
+        total += 1
+    return total
+
+
 def package_experiment(
     experiment: Experiment,
     collected_root: Path,
     experiment_archives_dir: Path,
+    profile_count: int,
     sample_count: int,
 ) -> PackageResult:
     destination_dir = collected_root / experiment.relative_dir
@@ -156,17 +244,41 @@ def package_experiment(
             warnings.append(f"missing profile/{subdir}: {source_profile_dir}")
             continue
 
-        selected_files = list(iter_profile_files(source_profile_dir))[:sample_count]
-        if len(selected_files) < sample_count:
+        profile_dirs = list(iter_profile_dirs(source_profile_dir))
+        selected_profile_dirs = profile_dirs[:profile_count]
+        if len(selected_profile_dirs) < profile_count:
             warnings.append(
-                f"profile/{subdir} has only {len(selected_files)} file(s): {source_profile_dir}"
+                f"profile/{subdir} has only {len(selected_profile_dirs)} profile dir(s): "
+                f"{source_profile_dir}"
             )
 
-        for source_file in selected_files:
-            relative_file = source_file.relative_to(source_profile_dir)
-            destination_file = destination_dir / "profile" / subdir / relative_file
-            copy_file(source_file, destination_file)
-            copied_files.append(destination_file)
+        if profile_dirs:
+            for profile_dir in selected_profile_dirs:
+                selected_files = list(iter_profile_files(profile_dir))[:sample_count]
+                if len(selected_files) < sample_count:
+                    warnings.append(
+                        f"profile/{subdir}/{profile_dir.name} has only "
+                        f"{len(selected_files)} file(s): {profile_dir}"
+                    )
+
+                for source_file in selected_files:
+                    relative_file = source_file.relative_to(source_profile_dir)
+                    destination_file = destination_dir / "profile" / subdir / relative_file
+                    copy_file(source_file, destination_file)
+                    copied_files.append(destination_file)
+        else:
+            selected_files = list(iter_profile_files(source_profile_dir))[:sample_count]
+            if len(selected_files) < sample_count:
+                warnings.append(
+                    f"profile/{subdir} has only {len(selected_files)} file(s): "
+                    f"{source_profile_dir}"
+                )
+
+            for source_file in selected_files:
+                relative_file = source_file.relative_to(source_profile_dir)
+                destination_file = destination_dir / "profile" / subdir / relative_file
+                copy_file(source_file, destination_file)
+                copied_files.append(destination_file)
 
     archive_path = experiment_archives_dir / f"{safe_archive_stem(experiment.relative_dir)}.tar.gz"
     make_tar_gz(destination_dir, archive_path, experiment.relative_dir)
@@ -209,6 +321,7 @@ def prepare_output_dir(input_dir: Path, output_dir: Path | None, overwrite: bool
 def main() -> None:
     args = parse_args()
     validate_args(args)
+    show_progress = not args.no_progress
 
     input_dir = args.input_dir.resolve()
     output_dir = prepare_output_dir(input_dir, args.output_dir, args.overwrite)
@@ -219,28 +332,38 @@ def main() -> None:
     if not experiments:
         raise SystemExit(f"no experiments found under: {input_dir}")
 
-    results = [
-        package_experiment(
-            experiment=experiment,
-            collected_root=collected_root,
-            experiment_archives_dir=experiment_archives_dir,
-            sample_count=args.sample_count,
-        )
-        for experiment in experiments
-    ]
+    print(f"found experiments: {len(experiments)}", flush=True)
+    results: List[PackageResult] = []
+    with Progress("packaging experiments", len(experiments), show_progress) as progress:
+        for experiment in experiments:
+            result = package_experiment(
+                experiment=experiment,
+                collected_root=collected_root,
+                experiment_archives_dir=experiment_archives_dir,
+                profile_count=args.profile_count,
+                sample_count=args.sample_count,
+            )
+            results.append(result)
+            progress.advance(detail=str(experiment.relative_dir))
 
-    manifest_path = write_manifest(output_dir, results)
+    with Progress("writing manifest", 1, show_progress) as progress:
+        manifest_path = write_manifest(output_dir, results)
+        progress.advance(detail=str(manifest_path.name))
 
     archive_name = args.archive_name
     if archive_name is None:
         archive_name = f"{input_dir.name}_profile_benchmark_{timestamp()}.tar.gz"
     final_archive_path = output_dir / archive_name
-    make_tar_gz(
-        output_dir,
-        final_archive_path,
-        output_dir.name,
-        exclude=lambda path: path == final_archive_path.resolve(),
-    )
+    exclude_final_archive = lambda path: path == final_archive_path.resolve()
+    final_archive_file_count = count_tar_files(output_dir, exclude=exclude_final_archive)
+    with Progress("creating final archive", final_archive_file_count, show_progress) as progress:
+        make_tar_gz(
+            output_dir,
+            final_archive_path,
+            output_dir.name,
+            exclude=exclude_final_archive,
+            progress=progress,
+        )
 
     warning_count = sum(len(result.warnings) for result in results)
     copied_count = sum(len(result.copied_files) for result in results)

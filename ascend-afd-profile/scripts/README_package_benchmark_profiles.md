@@ -1,6 +1,6 @@
 # package_benchmark_profiles.py
 
-将 benchmark 目录下每个实验的 `log/benchmark.log`，以及 `profile/model_runner` 和 `profile/ffn` 中各最多 4 个 profile 文件取出，按实验目录整理，并生成：
+将 benchmark 目录下每个实验的 `log/benchmark.log`，以及 `profile/model_runner` 和 `profile/ffn` 中各指定数量的 profile 目录取出，按实验目录整理，并生成：
 
 - `collected/`: 按实验名放置的文件目录
 - `experiment_archives/`: 每个实验一个 `.tar.gz`
@@ -37,12 +37,28 @@ python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
   --overwrite
 ```
 
-调整每个 profile 目录抽取数量：
+调整每侧抽取的 profile 目录数量：
+
+```bash
+python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --profile-count 2
+```
+
+调整每个 profile 目录内抽取的文件数量：
 
 ```bash
 python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
   /path/to/benchmark_results/deepseek-v3.2 \
   --sample-count 4
+```
+
+脚本默认会在终端显示进度条，包括实验打包进度、manifest 写入和总压缩包创建进度。关闭进度显示：
+
+```bash
+python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --no-progress
 ```
 
 ## 输出示例
@@ -54,10 +70,9 @@ profile_benchmark_package_20260421_120000/
     afd_bs24_32A16F_ub2_in4096_e4_20260421_002911/
       log/benchmark.log
       profile/
-        model_runner/<最多4个文件>
-        ffn/<最多4个文件>
+        model_runner/<最多1个profile目录，每个目录最多4个文件>
+        ffn/<最多1个profile目录，每个目录最多4个文件>
   experiment_archives/
     afd_bs24_32A16F_ub2_in4096_e4_20260421_002911.tar.gz
   deepseek-v3.2_profile_benchmark_20260421_120000.tar.gz
 ```
-
