@@ -1,0 +1,63 @@
+# package_benchmark_profiles.py
+
+将 benchmark 目录下每个实验的 `log/benchmark.log`，以及 `profile/model_runner` 和 `profile/ffn` 中各最多 4 个 profile 文件取出，按实验目录整理，并生成：
+
+- `collected/`: 按实验名放置的文件目录
+- `experiment_archives/`: 每个实验一个 `.tar.gz`
+- `<input_name>_profile_benchmark_<timestamp>.tar.gz`: 总压缩包
+- `MANIFEST.txt`: 复制文件和缺失目录记录
+
+## 适用目录
+
+支持输入模型目录：
+
+```text
+benchmark_results/deepseek-v3.2/
+  normal_xxx/
+    log/benchmark.log
+    profile/model_runner/
+    profile/ffn/
+```
+
+也支持输入更上层的 `benchmark_results/`，脚本会保留相对路径，例如 `deepseek-v3.2/normal_xxx`。
+
+## 用法
+
+```bash
+python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
+  /path/to/benchmark_results/deepseek-v3.2
+```
+
+指定输出目录：
+
+```bash
+python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
+  /path/to/benchmark_results \
+  -o /path/to/output/package_profiles \
+  --overwrite
+```
+
+调整每个 profile 目录抽取数量：
+
+```bash
+python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --sample-count 4
+```
+
+## 输出示例
+
+```text
+profile_benchmark_package_20260421_120000/
+  MANIFEST.txt
+  collected/
+    afd_bs24_32A16F_ub2_in4096_e4_20260421_002911/
+      log/benchmark.log
+      profile/
+        model_runner/<最多4个文件>
+        ffn/<最多4个文件>
+  experiment_archives/
+    afd_bs24_32A16F_ub2_in4096_e4_20260421_002911.tar.gz
+  deepseek-v3.2_profile_benchmark_20260421_120000.tar.gz
+```
+
