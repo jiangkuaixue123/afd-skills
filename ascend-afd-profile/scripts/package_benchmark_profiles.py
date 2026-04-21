@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
+import os
 import shutil
 import sys
 import tarfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Sequence
@@ -36,17 +39,26 @@ class PackageResult:
 
 
 class Progress:
-    def __init__(self, label: str, total: int, enabled: bool = True, width: int = 30) -> None:
+    def __init__(
+        self,
+        label: str,
+        total: int,
+        enabled: bool = True,
+        width: int = 30,
+        min_interval_s: float = 0.1,
+    ) -> None:
         self.label = label
         self.total = max(total, 0)
         self.enabled = enabled
         self.width = width
+        self.min_interval_s = min_interval_s
         self.current = 0
         self.last_message_len = 0
+        self.last_render_at = 0.0
 
     def __enter__(self) -> "Progress":
         if self.enabled:
-            self.render()
+            self.render(force=True)
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -54,7 +66,7 @@ class Progress:
             return
         if exc_type is None and self.current < self.total:
             self.current = self.total
-            self.render()
+            self.render(force=True)
         sys.stderr.write("\n")
         sys.stderr.flush()
 
@@ -63,7 +75,11 @@ class Progress:
         if self.enabled:
             self.render(detail)
 
-    def render(self, detail: str = "") -> None:
+    def render(self, detail: str = "", force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and self.current < self.total and now - self.last_render_at < self.min_interval_s:
+            return
+
         if self.total:
             ratio = self.current / self.total
             filled = int(self.width * ratio)
@@ -79,6 +95,7 @@ class Progress:
         sys.stderr.write(message + padding)
         sys.stderr.flush()
         self.last_message_len = len(message)
+        self.last_render_at = now
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,6 +136,18 @@ def parse_args() -> argparse.Namespace:
         help="Final tar.gz file name. Defaults to <input_name>_profile_benchmark_<timestamp>.tar.gz.",
     )
     parser.add_argument(
+        "--compression-level",
+        type=int,
+        default=1,
+        help="gzip compression level for archives, 0-9. Default: 1 for faster packaging.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel workers for per-experiment packaging. Default: auto.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Remove output directory first if it already exists.",
@@ -142,6 +171,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--sample-count must be >= 0")
     if args.profile_count < 0:
         raise SystemExit("--profile-count must be >= 0")
+    if args.compression_level < 0 or args.compression_level > 9:
+        raise SystemExit("--compression-level must be between 0 and 9")
+    if args.workers is not None and args.workers < 1:
+        raise SystemExit("--workers must be >= 1")
 
 
 def discover_experiments(input_dir: Path) -> List[Experiment]:
@@ -186,6 +219,7 @@ def make_tar_gz(
     source_path: Path,
     archive_path: Path,
     arcname: Path | str,
+    compression_level: int,
     exclude: Callable[[Path], bool] | None = None,
     progress: Progress | None = None,
 ) -> None:
@@ -204,7 +238,7 @@ def make_tar_gz(
             progress.advance(detail=tarinfo.name)
         return tarinfo
 
-    with tarfile.open(archive_path, "w:gz") as tar:
+    with tarfile.open(archive_path, "w:gz", compresslevel=compression_level) as tar:
         tar.add(source_path, arcname=str(arcname), filter=tar_filter)
 
 
@@ -229,6 +263,7 @@ def package_experiment(
     experiment_archives_dir: Path,
     profile_count: int,
     sample_count: int,
+    compression_level: int,
 ) -> PackageResult:
     destination_dir = collected_root / experiment.relative_dir
     copied_files: List[Path] = []
@@ -281,7 +316,12 @@ def package_experiment(
                 copied_files.append(destination_file)
 
     archive_path = experiment_archives_dir / f"{safe_archive_stem(experiment.relative_dir)}.tar.gz"
-    make_tar_gz(destination_dir, archive_path, experiment.relative_dir)
+    make_tar_gz(
+        destination_dir,
+        archive_path,
+        experiment.relative_dir,
+        compression_level=compression_level,
+    )
 
     return PackageResult(
         experiment=experiment,
@@ -318,6 +358,13 @@ def prepare_output_dir(input_dir: Path, output_dir: Path | None, overwrite: bool
     return output_dir
 
 
+def auto_workers(experiment_count: int) -> int:
+    if experiment_count <= 1:
+        return 1
+    cpu_count = os.cpu_count() or 1
+    return min(experiment_count, max(1, min(cpu_count, 8)))
+
+
 def main() -> None:
     args = parse_args()
     validate_args(args)
@@ -333,18 +380,28 @@ def main() -> None:
         raise SystemExit(f"no experiments found under: {input_dir}")
 
     print(f"found experiments: {len(experiments)}", flush=True)
-    results: List[PackageResult] = []
+    workers = args.workers if args.workers is not None else auto_workers(len(experiments))
+    results_by_experiment: dict[Path, PackageResult] = {}
     with Progress("packaging experiments", len(experiments), show_progress) as progress:
-        for experiment in experiments:
-            result = package_experiment(
-                experiment=experiment,
-                collected_root=collected_root,
-                experiment_archives_dir=experiment_archives_dir,
-                profile_count=args.profile_count,
-                sample_count=args.sample_count,
-            )
-            results.append(result)
-            progress.advance(detail=str(experiment.relative_dir))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    package_experiment,
+                    experiment=experiment,
+                    collected_root=collected_root,
+                    experiment_archives_dir=experiment_archives_dir,
+                    profile_count=args.profile_count,
+                    sample_count=args.sample_count,
+                    compression_level=args.compression_level,
+                )
+                for experiment in experiments
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                results_by_experiment[result.experiment.relative_dir] = result
+                progress.advance(detail=str(result.experiment.relative_dir))
+
+    results = [results_by_experiment[experiment.relative_dir] for experiment in experiments]
 
     with Progress("writing manifest", 1, show_progress) as progress:
         manifest_path = write_manifest(output_dir, results)
@@ -355,12 +412,15 @@ def main() -> None:
         archive_name = f"{input_dir.name}_profile_benchmark_{timestamp()}.tar.gz"
     final_archive_path = output_dir / archive_name
     exclude_final_archive = lambda path: path == final_archive_path.resolve()
-    final_archive_file_count = count_tar_files(output_dir, exclude=exclude_final_archive)
+    final_archive_file_count = (
+        count_tar_files(output_dir, exclude=exclude_final_archive) if show_progress else 0
+    )
     with Progress("creating final archive", final_archive_file_count, show_progress) as progress:
         make_tar_gz(
             output_dir,
             final_archive_path,
             output_dir.name,
+            compression_level=args.compression_level,
             exclude=exclude_final_archive,
             progress=progress,
         )
@@ -369,6 +429,8 @@ def main() -> None:
     copied_count = sum(len(result.copied_files) for result in results)
     print(f"experiments: {len(results)}")
     print(f"copied files: {copied_count}")
+    print(f"workers: {workers}")
+    print(f"compression level: {args.compression_level}")
     print(f"warnings: {warning_count}")
     print(f"manifest: {manifest_path}")
     print(f"final archive: {final_archive_path}")

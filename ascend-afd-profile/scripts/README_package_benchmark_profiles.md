@@ -61,6 +61,22 @@ python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
   --no-progress
 ```
 
+性能相关参数：
+
+```bash
+python3 ascend-afd-profile/scripts/package_benchmark_profiles.py \
+  /path/to/benchmark_results/deepseek-v3.2 \
+  --profile-count 2 \
+  --sample-count 4 \
+  --workers 8 \
+  --compression-level 1 \
+  --no-progress
+```
+
+- `--workers`: 每个实验独立打包时的并行 worker 数，默认自动选择，最多 8 个。
+- `--compression-level`: gzip 压缩等级，范围 0-9。默认 1，优先打包速度；如果更关注包体大小可以调高。
+- `--no-progress`: 关闭逐文件进度显示，并跳过最终压缩包创建前的文件数统计扫描。
+
 ## 输出示例
 
 ```text
