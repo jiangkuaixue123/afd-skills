@@ -166,6 +166,7 @@ benchmark_result
 - 需要把 profile 文件名映射为分析问题时，读 [artifacts.md](./references/artifacts.md)
 - 需要组织最终诊断报告时，读 [analysis-template.md](./references/analysis-template.md)
 - 需要自动扫描 `benchmark_result` 并汇总关键算子统计时，运行 [extract_afd_profile_summary.py](./scripts/extract_afd_profile_summary.py)
+- 需要把 normal kernel 和 AFD kernel 统计合并输出到同一张 CSV 时，运行 [extract_kernel_profile_summary.py](./scripts/extract_kernel_profile_summary.py)
 - 需要从 `kernel_details.csv` 统计去掉通信算子后的 A / F 两侧计算时间时，运行 [extract_kernel_stage_summary.py](./scripts/extract_kernel_stage_summary.py)
 
 ## 脚本入口
