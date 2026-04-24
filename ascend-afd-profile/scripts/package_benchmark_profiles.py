@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package benchmark.log and sampled profile files for benchmark experiments."""
+"""Package benchmark logs and optional sampled profile files for benchmark experiments."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from typing import Callable, Iterable, List, Sequence
 
 
 PROFILE_SUBDIRS = ("model_runner", "ffn")
+OPTIONAL_LOG_FILES = ("serve_result.json",)
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,7 @@ class Progress:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect each experiment's log/benchmark.log and sampled profiles from "
+            "Collect each experiment's log files and optional sampled profiles from "
             "profile/model_runner and profile/ffn, then create per-experiment "
             "archives and one final archive."
         )
@@ -273,10 +274,17 @@ def package_experiment(
     copy_file(experiment.benchmark_log, benchmark_destination)
     copied_files.append(benchmark_destination)
 
+    for log_name in OPTIONAL_LOG_FILES:
+        optional_log_source = experiment.benchmark_log.parent / log_name
+        if not optional_log_source.is_file():
+            continue
+        optional_log_destination = destination_dir / "log" / log_name
+        copy_file(optional_log_source, optional_log_destination)
+        copied_files.append(optional_log_destination)
+
     for subdir in PROFILE_SUBDIRS:
         source_profile_dir = experiment.source_dir / "profile" / subdir
         if not source_profile_dir.is_dir():
-            warnings.append(f"missing profile/{subdir}: {source_profile_dir}")
             continue
 
         profile_dirs = list(iter_profile_dirs(source_profile_dir))

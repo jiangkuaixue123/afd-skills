@@ -1,6 +1,6 @@
 # package_benchmark_profiles.py
 
-将 benchmark 目录下每个实验的 `log/benchmark.log`，以及 `profile/model_runner` 和 `profile/ffn` 中各指定数量的 profile 目录取出，按实验目录整理，并生成：
+将 benchmark 目录下每个实验的 `log/benchmark.log`，以及可选的 `log/serve_result.json` 打包；如果存在 `profile/model_runner` 和 `profile/ffn`，再从中按指定数量抽取 profile 目录，按实验目录整理，并生成：
 
 - `collected/`: 按实验名放置的文件目录
 - `experiment_archives/`: 每个实验一个 `.tar.gz`
@@ -15,11 +15,14 @@
 benchmark_results/deepseek-v3.2/
   normal_xxx/
     log/benchmark.log
+    log/serve_result.json
     profile/model_runner/
     profile/ffn/
 ```
 
 也支持输入更上层的 `benchmark_results/`，脚本会保留相对路径，例如 `deepseek-v3.2/normal_xxx`。
+
+如果某个实验没有 `profile` 目录，脚本只打包 `log` 下的文件，不会因为缺少 profile 产生告警。
 
 ## 用法
 
@@ -85,6 +88,7 @@ profile_benchmark_package_20260421_120000/
   collected/
     afd_bs24_32A16F_ub2_in4096_e4_20260421_002911/
       log/benchmark.log
+      log/serve_result.json
       profile/
         model_runner/<最多1个profile目录，每个目录最多4个文件>
         ffn/<最多1个profile目录，每个目录最多4个文件>
