@@ -36,7 +36,6 @@ class PackageResult:
     experiment: Experiment
     copied_files: List[Path]
     warnings: List[str]
-    archive_path: Path
 
 
 class Progress:
@@ -103,8 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Collect each experiment's log files and optional sampled profiles from "
-            "profile/model_runner and profile/ffn, then create per-experiment "
-            "archives and one final archive."
+            "profile/model_runner and profile/ffn, then create one final archive."
         )
     )
     parser.add_argument(
@@ -212,10 +210,6 @@ def copy_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
-def safe_archive_stem(relative_dir: Path) -> str:
-    return "__".join(relative_dir.parts)
-
-
 def make_tar_gz(
     source_path: Path,
     archive_path: Path,
@@ -261,10 +255,8 @@ def count_tar_files(source_path: Path, exclude: Callable[[Path], bool] | None = 
 def package_experiment(
     experiment: Experiment,
     collected_root: Path,
-    experiment_archives_dir: Path,
     profile_count: int,
     sample_count: int,
-    compression_level: int,
 ) -> PackageResult:
     destination_dir = collected_root / experiment.relative_dir
     copied_files: List[Path] = []
@@ -323,19 +315,10 @@ def package_experiment(
                 copy_file(source_file, destination_file)
                 copied_files.append(destination_file)
 
-    archive_path = experiment_archives_dir / f"{safe_archive_stem(experiment.relative_dir)}.tar.gz"
-    make_tar_gz(
-        destination_dir,
-        archive_path,
-        experiment.relative_dir,
-        compression_level=compression_level,
-    )
-
     return PackageResult(
         experiment=experiment,
         copied_files=copied_files,
         warnings=warnings,
-        archive_path=archive_path,
     )
 
 
@@ -344,7 +327,6 @@ def write_manifest(output_dir: Path, results: Sequence[PackageResult]) -> Path:
     with manifest_path.open("w", encoding="utf-8") as manifest:
         for result in results:
             manifest.write(f"[experiment] {result.experiment.relative_dir}\n")
-            manifest.write(f"archive: {result.archive_path.relative_to(output_dir)}\n")
             for copied_file in sorted(result.copied_files):
                 manifest.write(f"file: {copied_file.relative_to(output_dir)}\n")
             for warning in result.warnings:
@@ -381,7 +363,6 @@ def main() -> None:
     input_dir = args.input_dir.resolve()
     output_dir = prepare_output_dir(input_dir, args.output_dir, args.overwrite)
     collected_root = output_dir / "collected"
-    experiment_archives_dir = output_dir / "experiment_archives"
 
     experiments = discover_experiments(input_dir)
     if not experiments:
@@ -397,10 +378,8 @@ def main() -> None:
                     package_experiment,
                     experiment=experiment,
                     collected_root=collected_root,
-                    experiment_archives_dir=experiment_archives_dir,
                     profile_count=args.profile_count,
                     sample_count=args.sample_count,
-                    compression_level=args.compression_level,
                 )
                 for experiment in experiments
             ]

@@ -3,7 +3,6 @@
 将 benchmark 目录下每个实验的 `log/benchmark.log`，以及可选的 `log/serve_result.json` 打包；如果存在 `profile/model_runner` 和 `profile/ffn`，再从中按指定数量抽取 profile 目录，按实验目录整理，并生成：
 
 - `collected/`: 按实验名放置的文件目录
-- `experiment_archives/`: 每个实验一个 `.tar.gz`
 - `<input_name>_profile_benchmark_<timestamp>.tar.gz`: 总压缩包
 - `MANIFEST.txt`: 复制文件和缺失目录记录
 
@@ -92,7 +91,5 @@ profile_benchmark_package_20260421_120000/
       profile/
         model_runner/<最多1个profile目录，每个目录最多4个文件>
         ffn/<最多1个profile目录，每个目录最多4个文件>
-  experiment_archives/
-    afd_bs24_32A16F_ub2_in4096_e4_20260421_002911.tar.gz
   deepseek-v3.2_profile_benchmark_20260421_120000.tar.gz
 ```
